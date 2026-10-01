@@ -236,10 +236,30 @@ class ToolSearchService {
 	 */
 	buildActiveTools(discoveredToolNames: Set<string>): MCPTool[] {
 		const active: MCPTool[] = [this.getToolSearchDefinition()];
+		const added = new Set<string>(['tool_search']);
+
+		// Team tools are declared "always available" in the team-mode system
+		// prompt, so they MUST be present without requiring a prior tool_search.
+		// They only exist in the registry when team mode is active, so
+		// unconditionally including every team-* tool here is safe. Without this,
+		// one-shot tools that were never called earlier in the conversation
+		// (notably team-cleanup_team) are absent from the request; the model —
+		// believing they exist — then emits a plain-text turn with no tool call,
+		// which looks like the tool call silently failing and the turn just
+		// ending ("AI 结束时间").
+		for (const tool of this.registry) {
+			if (tool.function.name.startsWith('team-')) {
+				active.push(tool);
+				added.add(tool.function.name);
+			}
+		}
+
 		for (const name of discoveredToolNames) {
+			if (added.has(name)) continue;
 			const tool = this.toolMap.get(name);
 			if (tool) {
 				active.push(tool);
+				added.add(name);
 			}
 		}
 		return active;

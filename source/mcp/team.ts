@@ -958,13 +958,34 @@ export class TeamService {
 			return {success: false, error: 'No active team to clean up.'};
 		}
 
-		const running = teamTracker.getRunningTeammates();
+		// Teammates may still be registered for a brief moment after
+		// shutdown_teammate, because their unregister runs asynchronously
+		// (abort → auto-commit → unregister). Immediately refusing here caused a
+		// death loop where the lead repeatedly retried cleanup while the tracker
+		// was still draining. Signal abort to any stragglers and wait a bounded
+		// grace period for the tracker to drain before deciding.
+		let running = teamTracker.getRunningTeammates();
 		if (running.length > 0) {
-			return {
-				success: false,
-				error: `Cannot clean up: ${running.length} teammate(s) still running. Shut them down first.`,
-				runningTeammates: running.map(t => t.memberName),
-			};
+			teamTracker.abortAllTeammates();
+
+			const graceMs = 10_000;
+			const pollMs = 250;
+			const deadline = Date.now() + graceMs;
+			while (Date.now() < deadline) {
+				await new Promise(resolve => setTimeout(resolve, pollMs));
+				running = teamTracker.getRunningTeammates();
+				if (running.length === 0) break;
+			}
+
+			// Any teammate still registered after the grace period is force removed
+			// from the tracker so cleanup can complete (worktrees are force-removed
+			// below regardless). Their work was auto-committed on the abort path
+			// before unregister, so clearing the tracker entry here does not
+			// discard committed work.
+			running = teamTracker.getRunningTeammates();
+			for (const straggler of running) {
+				teamTracker.unregister(straggler.instanceId);
+			}
 		}
 
 		// Check for unmerged work
